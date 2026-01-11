@@ -1,60 +1,71 @@
 import pandas as pd
-import sqlalchemy as sa
-import pyodbc
+import mysql.connector
 import os
 
-# ============================
-# SQL Server details
-# ============================
-SERVER = ".\\SQLEXPRESS"
-DATABASE = "ecommerce"
+# List of CSV files and their corresponding table names
+csv_files = [
+    ('customers.csv', 'customers'),
+    ('orders.csv', 'orders'),
+    ('sales.csv', 'sales'),
+    ('products.csv', 'products'),
+    ('delivery.csv', 'delivery'),
+    ('payments.csv', 'payments')  # Added payments.csv for specific handling
+]
 
-# ============================
-# CSV folder path
-# ============================
-CSV_FOLDER = r"C:/Users/sparsh sharma/OneDrive/Desktop/yt py+sql p3main"
-
-# ============================
-# Create SQL connection
-# ============================
-engine = sa.create_engine(
-    f"mssql+pyodbc://@{SERVER}/{DATABASE}"
-    "?driver=ODBC+Driver+17+for+SQL+Server"
-    "&trusted_connection=yes"
+# Connect to the MySQL database
+conn = mysql.connector.connect(
+    host='your_host',
+    user='your_username',
+    password='your_password',
+    database='your_database'
 )
+cursor = conn.cursor()
 
-print("✅ Connected to SQL Server")
+# Folder containing the CSV files
+folder_path = 'path_to_your_folder'
 
-# ============================
-# CSV → Table mapping
-# ============================
-csv_table_map = {
-    "customers (1).csv": "customers",
-    "orders (1).csv": "orders",
-    "products (1).csv": "products",
-    "geolocation.csv": "geolocation",
-    "order_items.csv": "order_items",
-    "payments.csv": "payments",
-    "sellers.csv": "sellers"
-}
+def get_sql_type(dtype):
+    if pd.api.types.is_integer_dtype(dtype):
+        return 'INT'
+    elif pd.api.types.is_float_dtype(dtype):
+        return 'FLOAT'
+    elif pd.api.types.is_bool_dtype(dtype):
+        return 'BOOLEAN'
+    elif pd.api.types.is_datetime64_any_dtype(dtype):
+        return 'DATETIME'
+    else:
+        return 'TEXT'
 
-# ============================
-# Load CSVs into SQL
-# ============================
-for csv_file, table_name in csv_table_map.items():
-    csv_path = os.path.join(CSV_FOLDER, csv_file)
+for csv_file, table_name in csv_files:
+    file_path = os.path.join(folder_path, csv_file)
+    
+    # Read the CSV file into a pandas DataFrame
+    df = pd.read_csv(file_path)
+    
+    # Replace NaN with None to handle SQL NULL
+    df = df.where(pd.notnull(df), None)
+    
+    # Debugging: Check for NaN values
+    print(f"Processing {csv_file}")
+    print(f"NaN values before replacement:\n{df.isnull().sum()}\n")
 
-    print(f"\nLoading {csv_file} → {table_name}")
+    # Clean column names
+    df.columns = [col.replace(' ', '_').replace('-', '_').replace('.', '_') for col in df.columns]
 
-    df = pd.read_csv(csv_path)
+    # Generate the CREATE TABLE statement with appropriate data types
+    columns = ', '.join([f'`{col}` {get_sql_type(df[col].dtype)}' for col in df.columns])
+    create_table_query = f'CREATE TABLE IF NOT EXISTS `{table_name}` ({columns})'
+    cursor.execute(create_table_query)
 
-    df.to_sql(
-        name=table_name,
-        con=engine,
-        if_exists="replace",
-        index=False
-    )
+    # Insert DataFrame data into the MySQL table
+    for _, row in df.iterrows():
+        # Convert row to tuple and handle NaN/None explicitly
+        values = tuple(None if pd.isna(x) else x for x in row)
+        sql = f"INSERT INTO `{table_name}` ({', '.join(['`' + col + '`' for col in df.columns])}) VALUES ({', '.join(['%s'] * len(row))})"
+        cursor.execute(sql, values)
 
-    print(f"✅ {table_name} loaded ({len(df)} rows)")
+    # Commit the transaction for the current CSV file
+    conn.commit()
 
-print("\n🎉 All tables transferred successfully")
+# Close the connection
+conn.close()
